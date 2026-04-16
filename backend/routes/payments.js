@@ -1,6 +1,6 @@
 import express from 'express';
-import Payment from '../models/Payment.js';
-import Trip from '../models/Trip.js';
+import Payment     from '../models/Payment.js';
+import Trip        from '../models/Trip.js';
 import IssueAction from '../models/IssueAction.js';
 
 const router = express.Router();
@@ -27,8 +27,8 @@ const fmt = p => ({
   createdAt:    p.createdAt,
 });
 
-// ── GET /api/payments  — list with optional filters ───────────────────────────
-// ?type=fuel|bill  &status=pending|paid  &limit=50
+// ── GET /api/payments  ────────────────────────────────────────────────────────
+// Populates full trip (including fuelLogs for bill images) and full IssueAction
 router.get('/', async (req, res) => {
   try {
     const filter = {};
@@ -36,10 +36,17 @@ router.get('/', async (req, res) => {
     if (req.query.status) filter.status = req.query.status;
 
     const payments = await Payment.find(filter)
-      .populate('trip',        'tripNumber vehicle fromLocation toLocation status')
-      .populate('issueAction', 'poNumber title totalAmount proofFiles parts additionalCosts issueDescription')
+      .populate({
+        path:   'trip',
+        select: 'tripNumber vehicle fromLocation toLocation toLocation status fuelLogs',
+        populate: { path: 'vehicle', select: 'registrationNumber make model fuelType photos' }
+      })
+      .populate({
+        path:   'issueAction',
+        select: 'poNumber title totalAmount proofFiles parts additionalCosts issueDescription signature hasPartChanges createdByName generatedAt'
+      })
       .sort({ createdAt: -1 })
-      .limit(req.query.limit ? parseInt(req.query.limit) : 100);
+      .limit(req.query.limit ? parseInt(req.query.limit) : 200);
 
     res.status(200).json({ success: true, data: payments.map(fmt) });
   } catch (err) {
@@ -58,8 +65,7 @@ router.get('/unseen-count', async (req, res) => {
   }
 });
 
-// ── POST /api/payments  — create a new payment request (auto-called when
-//    a fuel log is added or a PO proof is uploaded) ────────────────────────────
+// ── POST /api/payments — create (called internally from driverTrips/issueActions)
 router.post('/', async (req, res) => {
   try {
     const {
@@ -68,26 +74,20 @@ router.post('/', async (req, res) => {
       issueActionId, poNumber, poTitle, poAmount,
     } = req.body;
 
-    if (!type || !tripId) {
-      return res.status(400).json({ success: false, message: 'type and tripId are required' });
-    }
+    if (!type || !tripId) return res.status(400).json({ success: false, message: 'type and tripId are required' });
 
-    // Avoid duplicates
     const existingFilter = type === 'fuel'
       ? { type: 'fuel', trip: tripId, fuelLogIndex }
       : { type: 'bill', trip: tripId, issueAction: issueActionId };
     const exists = await Payment.findOne(existingFilter);
-    if (exists) {
-      return res.status(200).json({ success: true, data: fmt(exists), duplicate: true });
-    }
+    if (exists) return res.status(200).json({ success: true, data: fmt(exists), duplicate: true });
 
     const payment = new Payment({
       type, trip: tripId, tripNumber,
       fuelLogIndex, fuelLitres, fuelFilledBy,
-      issueAction: issueActionId || undefined,
+      issueAction:  issueActionId || undefined,
       poNumber, poTitle, poAmount: poAmount || 0,
-      status: 'pending',
-      seenByAdmin: false,
+      status: 'pending', seenByAdmin: false,
     });
     await payment.save();
     res.status(201).json({ success: true, data: fmt(payment) });
@@ -97,24 +97,20 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ── PATCH /api/payments/:id/pay  — mark as paid ───────────────────────────────
+// ── PATCH /api/payments/:id/pay ───────────────────────────────────────────────
 router.patch('/:id/pay', async (req, res) => {
   try {
     const { amount, description, paymentMode, paidByName } = req.body;
-    if (!amount || Number(amount) <= 0) {
-      return res.status(400).json({ success: false, message: 'Amount is required' });
-    }
+    if (!amount || Number(amount) <= 0) return res.status(400).json({ success: false, message: 'Amount is required' });
 
     const payment = await Payment.findById(req.params.id);
     if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
-    if (payment.status === 'paid') {
-      return res.status(400).json({ success: false, message: 'Payment is already marked as paid' });
-    }
+    if (payment.status === 'paid') return res.status(400).json({ success: false, message: 'Already paid' });
 
     payment.amount      = Number(amount);
     payment.description = description || '';
     payment.paymentMode = paymentMode || '';
-    payment.paidByName  = paidByName || '';
+    payment.paidByName  = paidByName  || '';
     payment.status      = 'paid';
     payment.paidAt      = new Date();
     payment.seenByAdmin = true;
@@ -123,11 +119,11 @@ router.patch('/:id/pay', async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Payment recorded', data: fmt(payment) });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to mark payment', error: err.message });
+    res.status(500).json({ success: false, message: 'Failed', error: err.message });
   }
 });
 
-// ── PATCH /api/payments/mark-seen  — mark multiple as seen ───────────────────
+// ── PATCH /api/payments/mark-seen ────────────────────────────────────────────
 router.patch('/mark-seen', async (req, res) => {
   try {
     const { type } = req.body;
