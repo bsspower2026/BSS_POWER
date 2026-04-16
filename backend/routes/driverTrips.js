@@ -2,7 +2,7 @@
 import express from 'express';
 import Trip    from '../models/Trip.js';
 import Vehicle from '../models/Vehicle.js';
-import Payment from '../models/Payment.js';   // ← NEW
+import Payment from '../models/Payment.js';
 
 const router = express.Router();
 
@@ -89,14 +89,10 @@ router.patch('/:id/start', async (req, res) => {
     const trip = await Trip.findById(req.params.id);
     if (!trip) return res.status(404).json({ success: false, message: 'Trip not found' });
     if (trip.status !== 'assigned') return res.status(400).json({ success: false, message: 'Trip is not in assigned status' });
-
-    trip.status        = 'in_progress';
-    trip.startedAt     = new Date();
-    trip.startedBy     = performedBy;
-    trip.startedByRole = performedByRole;
-    trip.updatedAt     = new Date();
+    trip.status = 'in_progress'; trip.startedAt = new Date();
+    trip.startedBy = performedBy; trip.startedByRole = performedByRole;
+    trip.updatedAt = new Date();
     await trip.save();
-
     const updated = await populateTrip(Trip.findById(trip._id));
     res.status(200).json({ success: true, message: 'Trip started', data: formatTrip(updated) });
   } catch (err) {
@@ -111,14 +107,10 @@ router.patch('/:id/end', async (req, res) => {
     const trip = await Trip.findById(req.params.id);
     if (!trip) return res.status(404).json({ success: false, message: 'Trip not found' });
     if (trip.status !== 'in_progress') return res.status(400).json({ success: false, message: 'Trip is not in progress' });
-
-    trip.status          = 'completed';
-    trip.completedAt     = new Date();
-    trip.completedBy     = performedBy;
-    trip.completedByRole = performedByRole;
-    trip.updatedAt       = new Date();
+    trip.status = 'completed'; trip.completedAt = new Date();
+    trip.completedBy = performedBy; trip.completedByRole = performedByRole;
+    trip.updatedAt = new Date();
     await trip.save();
-
     const updated = await populateTrip(Trip.findById(trip._id));
     res.status(200).json({ success: true, message: 'Trip completed', data: formatTrip(updated) });
   } catch (err) {
@@ -127,77 +119,39 @@ router.patch('/:id/end', async (req, res) => {
 });
 
 // ── POST /api/driver-trips/:id/fuel ───────────────────────────────────────────
-// After saving, automatically creates a pending Payment record for the admin.
 router.post('/:id/fuel', async (req, res) => {
   try {
     const trip = await Trip.findById(req.params.id).populate('vehicle');
     if (!trip) return res.status(404).json({ success: false, message: 'Trip not found' });
-    if (!['assigned', 'in_progress'].includes(trip.status)) {
+    if (!['assigned', 'in_progress'].includes(trip.status))
       return res.status(400).json({ success: false, message: 'Cannot add fuel log to this trip' });
-    }
 
-    const {
-      litresFilled, receiptBills = [], note = '',
-      filledBy = '', filledByRole = 'driver', bypass = false
-    } = req.body;
-
-    if (!litresFilled || Number(litresFilled) <= 0) {
+    const { litresFilled, receiptBills = [], note = '', filledBy = '', filledByRole = 'driver', bypass = false } = req.body;
+    if (!litresFilled || Number(litresFilled) <= 0)
       return res.status(400).json({ success: false, message: 'litresFilled must be a positive number' });
-    }
 
-    const newL  = Number(litresFilled);
-    const used  = (trip.fuelLogs || []).reduce((s, l) => s + (l.litresFilled || 0), 0);
-    const cap   = trip.estimatedFuelLitres || 0;
-
+    const newL = Number(litresFilled);
+    const used = (trip.fuelLogs || []).reduce((s, l) => s + (l.litresFilled || 0), 0);
+    const cap  = trip.estimatedFuelLitres || 0;
     if (cap > 0 && used + newL > cap) {
-      const rem = cap - used;
-      return res.status(400).json({
-        success: false,
-        message: `Fuel cap exceeded. Max ${rem.toFixed(1)}L remaining (cap ${cap}L, filled ${used}L).`
-      });
+      return res.status(400).json({ success: false, message: `Fuel cap exceeded. Max ${(cap - used).toFixed(1)}L remaining.` });
     }
 
-    trip.fuelLogs.push({
-      litresFilled: newL,
-      receiptBills,
-      note,
-      filledBy,
-      filledByRole,
-      bypass: Boolean(bypass),
-      filledAt: new Date(),
-    });
+    trip.fuelLogs.push({ litresFilled: newL, receiptBills, note, filledBy, filledByRole, bypass: Boolean(bypass), filledAt: new Date() });
     trip.updatedAt = new Date();
     await trip.save();
 
-    // ── AUTO-CREATE fuel payment request for admin ─────────────────────────
-    // The new log is always the last element after push+save.
+    // Auto-create payment record
     const newLogIndex = trip.fuelLogs.length - 1;
     try {
-      // Avoid duplicate if already exists (e.g. retry)
       const already = await Payment.findOne({ type: 'fuel', trip: trip._id, fuelLogIndex: newLogIndex });
       if (!already) {
-        await new Payment({
-          type:         'fuel',
-          trip:          trip._id,
-          tripNumber:    trip.tripNumber,
-          fuelLogIndex:  newLogIndex,
-          fuelLitres:    newL,
-          fuelFilledBy:  filledBy,
-          status:        'pending',
-          seenByAdmin:   false,
-        }).save();
+        await new Payment({ type: 'fuel', trip: trip._id, tripNumber: trip.tripNumber, fuelLogIndex: newLogIndex, fuelLitres: newL, fuelFilledBy: filledBy, status: 'pending', seenByAdmin: false }).save();
       }
-    } catch (payErr) {
-      // Payment record failure must NOT break the main fuel-fill response
-      console.error('Auto-payment creation failed (fuel):', payErr.message);
-    }
+    } catch (payErr) { console.error('Auto-payment failed (fuel):', payErr.message); }
 
-    // Update vehicle fuel qty
     if (trip.vehicle) {
-      await Vehicle.findByIdAndUpdate(
-        trip.vehicle._id || trip.vehicle,
-        { $inc: { currentFuelQty: newL }, updatedAt: new Date() }
-      );
+      await Vehicle.findByIdAndUpdate(trip.vehicle._id || trip.vehicle, { $inc: { currentFuelQty: newL }, updatedAt: new Date() });
     }
 
     const updated = await populateTrip(Trip.findById(trip._id));
@@ -208,25 +162,47 @@ router.post('/:id/fuel', async (req, res) => {
 });
 
 // ── POST /api/driver-trips/:id/report ─────────────────────────────────────────
+// Body: { description, issueType, issuePhoto: {url, publicId},
+//         severity, reportedBy, reportedByRole, bypass }
 router.post('/:id/report', async (req, res) => {
   try {
     const trip = await Trip.findById(req.params.id);
     if (!trip) return res.status(404).json({ success: false, message: 'Trip not found' });
-    if (!['assigned', 'in_progress'].includes(trip.status)) {
+    if (!['assigned', 'in_progress'].includes(trip.status))
       return res.status(400).json({ success: false, message: 'Cannot report issue for this trip' });
+
+    const {
+      description       = '',
+      issueType         = '',
+      issuePhoto,                     // { url, publicId } — optional
+      severity          = 'medium',
+      reportedBy        = '',
+      reportedByRole    = 'driver',
+      bypass            = false
+    } = req.body;
+
+    const descText = description?.trim();
+    const typeText = issueType?.trim();
+
+    if (!typeText && !descText) {
+      return res.status(400).json({ success: false, message: 'Issue type or description is required' });
     }
 
-    const { description, severity = 'medium', reportedBy = '', reportedByRole = 'driver', bypass = false } = req.body;
-    if (!description?.trim()) return res.status(400).json({ success: false, message: 'Issue description is required' });
-
-    trip.issueReports.push({
-      description: description.trim(),
+    const issueEntry = {
+      description:    descText || typeText,
+      issueType:      typeText,
       severity,
       reportedBy,
       reportedByRole,
-      bypass: Boolean(bypass),
-      reportedAt: new Date(),
-    });
+      bypass:         Boolean(bypass),
+      reportedAt:     new Date(),
+    };
+
+    if (issuePhoto?.url) {
+      issueEntry.issuePhoto = { url: issuePhoto.url, publicId: issuePhoto.publicId || '' };
+    }
+
+    trip.issueReports.push(issueEntry);
     trip.updatedAt = new Date();
     await trip.save();
 

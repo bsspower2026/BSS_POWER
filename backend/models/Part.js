@@ -4,18 +4,15 @@ const partSchema = new mongoose.Schema({
   // Basic Information
   partName: {
     type: String,
-    required: true,
     trim: true
   },
   partCode: {
     type: String,
-    required: true,
     unique: true,
     trim: true
   },
   category: {
     type: String,
-    required: true,
     trim: true
   },
   description: {
@@ -31,7 +28,6 @@ const partSchema = new mongoose.Schema({
   },
   unitOfMeasurement: {
     type: String,
-    required: true,
     trim: true
   },
   minimumStockLevel: {

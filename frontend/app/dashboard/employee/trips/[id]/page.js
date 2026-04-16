@@ -29,6 +29,7 @@ const SEV = {
   medium: 'bg-amber-50 text-amber-700 border-amber-200',
   high:   'bg-red-50 text-red-700 border-red-200',
 };
+const ISSUE_TYPES = ['Tyre Problem', 'Engine Problem', 'Vehicle Breakdown', 'Other'];
 const PO_S = {
   draft:          { label:'Draft',          cls:'bg-gray-100 text-gray-600' },
   generated:      { label:'PO Generated',   cls:'bg-indigo-50 text-indigo-700' },
@@ -453,6 +454,7 @@ function BypassPanel({ trip, issueActions, onClose, onTripUpdate, onActionsUpdat
 
   const [issueSev,  setIssueSev]  = useState('medium');
   const [issueD,    setIssueD]    = useState('');
+  const [issueType, setIssueType] = useState('');
   const [issueSave, setIssueSave] = useState(false);
 
   const totalFilled = (trip.fuelLogs||[]).reduce((s,l)=>s+(l.litresFilled||0),0);
@@ -483,8 +485,11 @@ function BypassPanel({ trip, issueActions, onClose, onTripUpdate, onActionsUpdat
   };
 
   const submitIssue = async () => {
-    if(!issueD.trim()){alert('Describe the issue');return;} setIssueSave(true);
-    try { const r=await call('report','POST',{description:issueD,severity:issueSev,reportedBy:empName,reportedByRole:'employee_bypass'}); if(!r.success){alert(r.message);return;} onTripUpdate(r.data); setIssueD(''); setIssueSev('medium'); setShowIssue(false); } catch{alert('Failed');} finally{setIssueSave(false);}
+    if(!issueType){alert('Select an issue type');return;}
+    if(issueType==='Other'&&!issueD.trim()){alert('Describe the issue');return;}
+    setIssueSave(true);
+    const description = issueType==='Other' ? issueD.trim() : issueType;
+    try { const r=await call('report','POST',{description,issueType,reportedBy:empName,reportedByRole:'employee_bypass'}); if(!r.success){alert(r.message);return;} onTripUpdate(r.data); setIssueD(''); setIssueType(''); setShowIssue(false); } catch{alert('Failed');} finally{setIssueSave(false);}
   };
 
   const uploadProof = async (poId,e) => {
@@ -580,16 +585,15 @@ function BypassPanel({ trip, issueActions, onClose, onTripUpdate, onActionsUpdat
               {showIssue&&(
                 <div className="border-t border-gray-100 px-4 pb-4 pt-3 space-y-3">
                   <div>
-                    <label className="form-label">Severity</label>
-                    <div className="flex gap-2">
-                      {['low','medium','high'].map(s=>(
-                        <label key={s} className={`flex-1 text-center py-1.5 text-xs font-medium border rounded cursor-pointer capitalize transition-colors ${issueSev===s?(s==='high'?'bg-red-50 border-red-400 text-red-700':s==='medium'?'bg-amber-50 border-amber-400 text-amber-700':'bg-blue-50 border-blue-400 text-blue-700'):'border-gray-300 text-gray-600 hover:border-gray-400'}`}>
-                          <input type="radio" name="bp_sev" value={s} checked={issueSev===s} onChange={()=>setIssueSev(s)} className="hidden"/>{s}
-                        </label>
-                      ))}
-                    </div>
+                    <label className="form-label">Issue Type *</label>
+                    <select value={issueType} onChange={e=>setIssueType(e.target.value)} className="input-field">
+                      <option value="">Select issue type…</option>
+                      {ISSUE_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
+                    </select>
                   </div>
-                  <div><label className="form-label">Description *</label><textarea value={issueD} onChange={e=>setIssueD(e.target.value)} className="input-field" rows={3} placeholder="Describe the issue…"/></div>
+                  {issueType==='Other'&&(
+                    <div><label className="form-label">Description *</label><textarea value={issueD} onChange={e=>setIssueD(e.target.value)} className="input-field" rows={3} placeholder="Describe the issue…"/></div>
+                  )}
                   <div className="flex gap-2">
                     <button onClick={submitIssue} disabled={issueSave} className="btn-primary flex-1 disabled:opacity-50">{issueSave?'Saving…':'Submit'}</button>
                     <button onClick={()=>setShowIssue(false)} className="btn-secondary">Cancel</button>
@@ -982,15 +986,32 @@ export default function TripDetailPage() {
                     return (
                       <div key={i} className="border border-gray-200 rounded">
                         <div className="flex items-start gap-3 p-4">
-                          <span className={`mt-0.5 text-xs px-2 py-0.5 rounded font-semibold border flex-shrink-0 ${SEV[issue.severity]||SEV.medium}`}>
-                            {issue.severity?.toUpperCase()}
-                          </span>
                           <div className="flex-1 min-w-0">
+                            {/* Issue type + severity badges */}
+                            <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                              {issue.issueType && (
+                                <span className="text-xs font-medium px-2 py-0.5 rounded bg-gray-100 text-gray-700 border border-gray-200">
+                                  {issue.issueType}
+                                </span>
+                              )}
+                              {issue.severity && (
+                                <span className={`text-xs font-medium px-2 py-0.5 rounded border ${SEV[issue.severity]||SEV.medium}`}>
+                                  {issue.severity?.toUpperCase()}
+                                </span>
+                              )}
+                            </div>
+                            {/* Description */}
                             <p className="text-sm text-gray-900">{issue.description}</p>
+                            {/* Reporter + date */}
                             <p className="text-xs text-gray-400 mt-1">
                               {issue.reportedBy&&<>Reported by <span className={issue.bypass?'text-indigo-500':undefined}>{issue.reportedBy}{issue.bypass?' (bypass)':''}</span> · </>}
                               {fmtDT(issue.reportedAt)}
                             </p>
+                            {/* Issue photo inline */}
+                            {issue.issuePhoto?.url && (
+                              <img src={issue.issuePhoto.url} alt="Issue photo"
+                                className="mt-2 w-full max-h-48 object-cover rounded border border-gray-200"/>
+                            )}
                           </div>
                           <button
                             onClick={()=>{ setSelIssue(i); setShowPOModal(true); }}
